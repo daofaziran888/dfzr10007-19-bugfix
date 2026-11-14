@@ -11,33 +11,16 @@ const columns = [
   "输出目标",
   "调度周期",
   "依赖关系",
-  "任务状态"
+  "任务状态",
+  "当前批次"
 ]
-const actions = [
-  "启动任务",
-  "暂停任务",
-  "归档任务"
-]
-const statuses = [
-  "草稿",
-  "运行中",
-  "已暂停",
-  "已完成"
-]
-const stats = [
-  {
-    "label": "准备任务总数",
-    "value": 0
-  },
-  {
-    "label": "运行中任务",
-    "value": 0
-  },
-  {
-    "label": "已暂停任务",
-    "value": 0
-  }
-]
+// 启动入口只对草稿开放，运行中显示暂停入口，已暂停显示归档入口，完成态关闭全部入口
+const ACTIONS_BY_STATUS: Record<string, string[]> = {
+  '草稿': ['启动任务'],
+  '运行中': ['暂停任务'],
+  '已暂停': ['归档任务'],
+  '已完成': [],
+}
 
 type Row = Record<string, string | number | null>
 
@@ -47,6 +30,12 @@ export default function EtlView() {
   const [errorMessage, setErrorMessage] = useState('')
   const [filters, setFilters] = useState<Record<string, string>>({})
   const filterFields = useMemo(() => columns.slice(0, 3), [])
+
+  const stats = useMemo(() => ([
+    { label: '准备任务总数', value: total },
+    { label: '运行中任务', value: rows.filter((row) => row['任务状态'] === '运行中').length },
+    { label: '已暂停任务', value: rows.filter((row) => row['任务状态'] === '已暂停').length },
+  ]), [rows, total])
 
   const reload = useCallback(async () => {
     setErrorMessage('')
@@ -73,14 +62,23 @@ export default function EtlView() {
     try {
       const response = await request(`${ENDPOINT}/${row.id}/actions`, {
         method: 'POST',
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ values: { action } }),
       })
+      const payload = await response.json().catch(() => null)
       if (!response.ok) {
-        throw new Error('数据准备流水线动作未生效，请稍后重试')
+        const detail = payload && typeof payload.detail === 'string' ? payload.detail : '数据准备流水线动作未生效，请稍后重试'
+        throw new Error(detail)
+      }
+      // 越级操作会返回失败回执：展示回执并重新拉取，清掉页面上可能残留的错位状态
+      if (payload && payload.ok === false) {
+        setErrorMessage(payload.message ?? '动作被拦截')
+        await reload()
+        return
       }
       await reload()
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '数据准备流水线操作失败')
+      await reload()
     }
   }
 
@@ -133,18 +131,22 @@ export default function EtlView() {
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <tr key={String(row.id)}>
-              {columns.map((column) => <td key={column}>{row[column] ?? '—'}</td>)}
-              <td className="row-actions">
-                {actions.map((action) => (
-                  <button key={action} className="link" type="button" onClick={() => void runAction(action, row)}>
-                    {action}
-                  </button>
-                ))}
-              </td>
-            </tr>
-          ))}
+          {rows.map((row) => {
+            const allowedActions = ACTIONS_BY_STATUS[String(row['任务状态'] ?? '')] ?? []
+            return (
+              <tr key={String(row.id)}>
+                {columns.map((column) => <td key={column}>{row[column] ?? '—'}</td>)}
+                <td className="row-actions">
+                  {allowedActions.length === 0 && <span className="empty-actions">—</span>}
+                  {allowedActions.map((action) => (
+                    <button key={action} className="link" type="button" onClick={() => void runAction(action, row)}>
+                      {action}
+                    </button>
+                  ))}
+                </td>
+              </tr>
+            )
+          })}
           {rows.length === 0 && (
             <tr>
               <td className="empty-state" colSpan={columns.length + 1}>暂无数据准备流水线数据，可先登记准备任务</td>

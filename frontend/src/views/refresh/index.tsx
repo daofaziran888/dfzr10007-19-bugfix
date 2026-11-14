@@ -11,33 +11,16 @@ const columns = [
   "增量字段",
   "全量标记",
   "下一次刷新",
+  "刷新水位",
   "策略状态"
 ]
-const actions = [
-  "启用刷新",
-  "暂停刷新",
-  "关闭刷新"
-]
-const statuses = [
-  "已创建",
-  "生效中",
-  "已暂停",
-  "已关闭"
-]
-const stats = [
-  {
-    "label": "刷新策略总数",
-    "value": 0
-  },
-  {
-    "label": "生效中策略",
-    "value": 0
-  },
-  {
-    "label": "已暂停刷新",
-    "value": 0
-  }
-]
+// 启用入口只对已创建开放，生效中显示暂停入口，已暂停显示关闭入口，已关闭关闭全部入口
+const ACTIONS_BY_STATUS: Record<string, string[]> = {
+  '已创建': ['启用刷新'],
+  '生效中': ['暂停刷新'],
+  '已暂停': ['关闭刷新'],
+  '已关闭': [],
+}
 
 type Row = Record<string, string | number | null>
 
@@ -47,6 +30,12 @@ export default function RefreshView() {
   const [errorMessage, setErrorMessage] = useState('')
   const [filters, setFilters] = useState<Record<string, string>>({})
   const filterFields = useMemo(() => columns.slice(0, 3), [])
+
+  const stats = useMemo(() => ([
+    { label: '刷新策略总数', value: total },
+    { label: '生效中策略', value: rows.filter((row) => row['策略状态'] === '生效中').length },
+    { label: '已暂停刷新', value: rows.filter((row) => row['策略状态'] === '已暂停').length },
+  ]), [rows, total])
 
   const reload = useCallback(async () => {
     setErrorMessage('')
@@ -73,14 +62,23 @@ export default function RefreshView() {
     try {
       const response = await request(`${ENDPOINT}/${row.id}/actions`, {
         method: 'POST',
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ values: { action } }),
       })
+      const payload = await response.json().catch(() => null)
       if (!response.ok) {
-        throw new Error('数据定时刷新动作未生效，请稍后重试')
+        const detail = payload && typeof payload.detail === 'string' ? payload.detail : '数据定时刷新动作未生效，请稍后重试'
+        throw new Error(detail)
+      }
+      // 越级操作会返回失败回执：展示回执并重新拉取，清掉页面上可能残留的错位状态
+      if (payload && payload.ok === false) {
+        setErrorMessage(payload.message ?? '动作被拦截')
+        await reload()
+        return
       }
       await reload()
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '数据定时刷新操作失败')
+      await reload()
     }
   }
 
@@ -133,18 +131,22 @@ export default function RefreshView() {
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <tr key={String(row.id)}>
-              {columns.map((column) => <td key={column}>{row[column] ?? '—'}</td>)}
-              <td className="row-actions">
-                {actions.map((action) => (
-                  <button key={action} className="link" type="button" onClick={() => void runAction(action, row)}>
-                    {action}
-                  </button>
-                ))}
-              </td>
-            </tr>
-          ))}
+          {rows.map((row) => {
+            const allowedActions = ACTIONS_BY_STATUS[String(row['策略状态'] ?? '')] ?? []
+            return (
+              <tr key={String(row.id)}>
+                {columns.map((column) => <td key={column}>{row[column] ?? '—'}</td>)}
+                <td className="row-actions">
+                  {allowedActions.length === 0 && <span className="empty-actions">—</span>}
+                  {allowedActions.map((action) => (
+                    <button key={action} className="link" type="button" onClick={() => void runAction(action, row)}>
+                      {action}
+                    </button>
+                  ))}
+                </td>
+              </tr>
+            )
+          })}
           {rows.length === 0 && (
             <tr>
               <td className="empty-state" colSpan={columns.length + 1}>暂无数据定时刷新数据，可先登记刷新策略</td>

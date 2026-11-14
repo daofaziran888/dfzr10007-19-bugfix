@@ -30,6 +30,20 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出数据准备流水线清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "etl", "total": total, "items": items}
+
+
+@router.get("/batches")
+def list_batches() -> dict[str, Any]:
+    """运行实例清单：批次号全局递增，历史批次只增不改，用于核对 J1、J2 的执行轨迹。"""
+    items = service.list_batches()
+    return {"module": "etl", "total": len(items), "items": items}
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条准备任务明细；不存在时给出可读的错误说明。"""
@@ -41,25 +55,18 @@ def get_entry(entry_id: int) -> dict:
 
 @router.post("", response_model=ActionResult)
 def create_entry(payload: EntryPayload) -> ActionResult:
-    """登记一条准备任务，缺字段时说明原因而不是静默丢弃。"""
-    entry, missing = service.create_entry(payload.values)
-    if missing:
-        return ActionResult(ok=False, message=f"缺少必填字段：{'、'.join(missing)}")
+    """登记一条准备任务，缺字段或编号重复时说明原因而不是静默丢弃。"""
+    entry, error = service.create_entry(payload.values)
+    if error:
+        return ActionResult(ok=False, message=error)
     return ActionResult(ok=True, message="准备任务已登记", entry=entry)
 
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条准备任务执行启动任务、暂停任务、归档任务；不允许的动作会被拦下并说明原因。"""
+    """对单条准备任务执行启动任务、暂停任务、归档任务；越级动作会被拦下并返回失败回执。"""
     action = str(payload.values.get("action") or "").strip()
     entry, message = service.run_action(entry_id, action)
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出数据准备流水线清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "etl", "total": total, "items": items}
